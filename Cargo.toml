@@ -1,0 +1,18 @@
+[package]
+name = "message_service"
+version = "0.1.0"
+authors = ["kumarmo2 <kr.mohit6794@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# tokio = { version = "0.2.19", features = ["full"] }
+futures = "0.3.4"
+smol = "0.1.2"
+lapin = "0.39.7"
+serde = "1.0.106"
+serde_json = "1.0"
+manager = {git = "https://github.com/kumarmo2/rabbitmq_manager/", branch = "f-expose-channel-pool"}
+# warp = "0.2"
+# sqlx = { version = "0.3", default-features = false, features = [ "runtime-tokio", "macros", "mysql" ] }
