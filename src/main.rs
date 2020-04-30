@@ -1,91 +1,78 @@
-use lapin::{
-    options::{BasicPublishOptions, QueueDeclareOptions},
-    types::FieldTable,
-    BasicProperties, Connection, ConnectionProperties,
-};
+use futures::future::join_all;
+use lapin::{options::*, types::FieldTable};
 use manager::RabbitMqManager;
-use serde::Serialize;
-use smol::block_on;
-use smol::Task;
-use smol::Timer;
-use std::time::Duration;
+use smol::{self, Task};
 
 fn main() {
     println!("hello world");
-    //
     let addr = "amqp://guest:guest@127.0.0.1:5672/%2f";
-    let mut rabbit = RabbitMqManager::new(addr);
+    let rabbit = RabbitMqManager::new(addr);
+    let rabbit_sub_cloned = rabbit.clone();
 
-    // Task::spawn(async move {
-    block_on(async move {
-        let publish_timeout = Duration::from_millis(200);
+    smol::run(async move {
+        let consumer_task = start_consumer(rabbit_sub_cloned, "hello");
+        join_all(vec![consumer_task]).await;
+    });
+}
+
+fn start_consumer(rabbit: RabbitMqManager, queue_name: &'static str) -> Task<()> {
+    return Task::spawn(async move {
         loop {
-            let result = rabbit
-                .publish_message_to_queue_async(
-                    "hello",
-                    &DummyPayload {
-                        input: "kumarmo2".to_string(),
-                    },
+            let channel = rabbit.get_channel_pool().get().unwrap();
+            let consumer = channel
+                .basic_consume(
+                    queue_name,
+                    "message_service",
+                    BasicConsumeOptions::default(),
+                    FieldTable::default(),
                 )
-                .await;
-            match result {
-                Ok(is_published) => match is_published {
-                    true => println!("messaged was published with confirm"),
-                    false => println!("error confirming message publish"),
-                },
-                Err(reason) => {
-                    println!("error occured: {:?}", reason);
+                .await
+                .unwrap();
+            for delivery in consumer {
+                println!("message received",);
+                if let Ok(delivery) = delivery {
+                    channel
+                        .basic_ack(delivery.delivery_tag, BasicAckOptions::default())
+                        .await
+                        .expect("error while acknowledging the message")
                 }
             }
-            println!("Going to sleep");
-            Timer::after(publish_timeout).await;
-            println!("woke up");
         }
     });
 }
 
-#[derive(Serialize)]
-struct DummyPayload {
-    input: String,
-}
-
-// ------------- using asynchronous apis in synchronous environment example------------
-
-// use futures::future::join_all;
-// use std::time::Instant;
-// use tokio::fs;
-// use tokio::runtime::Runtime;
-
-// fn main() {
-//     println!("hello world");
-//     let mut runtime = Runtime::new().expect("could not create runtime");
-//     let files = vec!["./some.iso", "./movie2.mp4", "./movie3.mp4", "./movie4.mp4"];
-//     //read_files_one_by_one(&mut runtime, &files);
-//     read_files_in_parallel(&mut runtime, &files);
+// fn start_publisher(rabbit: RabbitMqManager) -> Task<()> {
+//     // let rabbit_pub_cloned = rabbit.clone();
+//     return Task::spawn(async move {
+//         // let publish_timeout = Duration::from_millis(2000);
+//         let mut counter = 0;
+//         loop {
+//             let result = rabbit
+//                 .publish_message_to_queue_async(
+//                     "hello",
+//                     &DummyPayload {
+//                         input: "kumarmo2".to_string(),
+//                     },
+//                 )
+//                 .await;
+//             match result {
+//                 Ok(is_published) => match is_published {
+//                     true => {
+//                         println!("message sent: {}", counter);
+//                         counter = counter + 1;
+//                     }
+//                     false => println!("error confirming message publish"),
+//                 },
+//                 Err(reason) => {
+//                     println!("error occured: {:?}", reason);
+//                 }
+//             }
+//             // Timer::after(publish_timeout).await;
+//         }
+//     });
 // }
 
-// fn read_files_one_by_one(runtime: &mut Runtime, paths: &[&str]) {
-//     println!("starting reading files one by one");
-//     let start = Instant::now();
-//     for path in paths {
-//         let fut = fs::read(path);
-//         let data = runtime.block_on(fut).unwrap();
-//         // println!("done reading: {}, len: {}", path, data.len());
-//     }
-//     println!(
-//         "done reading all the files. total time: {}",
-//         start.elapsed().as_millis()
-//     );
-// }
-
-// fn read_files_in_parallel(runtime: &mut Runtime, paths: &[&str]) {
-//     // let x = paths.iter().map(|path| fs::read(path)).collect::<Future>();
-//     let futures = paths.iter().map(|path| fs::read(path));
-//     println!("starting reading files in parallel");
-//     let start = Instant::now();
-//     let results = runtime.block_on(join_all(futures));
-//     println!(
-//         "done reading all the files. total time: {}",
-//         start.elapsed().as_millis()
-//     );
+// #[derive(Serialize)]
+// struct DummyPayload {
+//     input: String,
 // }
