@@ -15,5 +15,7 @@ lapin = "0.39.7"
 serde = "1.0.106"
 serde_json = "1.0"
 manager = {git = "https://github.com/kumarmo2/rabbitmq_manager/", branch = "master"}
+chat_common_types = {git = "https://github.com/kumarmo2/chat_common_types.git", branch = "master"}
+num_cpus = "1.13.0"
 # warp = "0.2"
 # sqlx = { version = "0.3", default-features = false, features = [ "runtime-tokio", "macros", "mysql" ] }
