@@ -1,78 +1,105 @@
-use futures::future::join_all;
-use lapin::{options::*, types::FieldTable};
-use manager::RabbitMqManager;
-use smol::{self, Task};
+mod business;
+mod dtos;
+mod utils;
+use crate::business::handle_message_event as handle_message_event_bl;
+use chat_common_types::events::MessageEvent;
+use lapin::{message::Delivery, options::*, types::FieldTable, Channel, Consumer};
+use manager::{ChannelManager, PooledConnection, RabbitMqManager};
+use num_cpus;
+use serde_json::from_str;
+use smol::{self, block_on, Task};
+use std::time::Instant;
+use utils::create_client;
 
 fn main() {
     println!("hello world");
+    // TODO: retrieve from the config based on environment.
     let addr = "amqp://guest:guest@127.0.0.1:5672/%2f";
+    // TODO: update the RabbitMqManager to accept the max number of connections and channels.
     let rabbit = RabbitMqManager::new(addr);
-    let rabbit_sub_cloned = rabbit.clone();
+    let http_client = create_client();
+    let cpus = num_cpus::get().max(1);
+    for _ in 0..cpus {
+        std::thread::spawn(move || smol::run(futures::future::pending::<()>()));
+    }
 
-    smol::run(async move {
-        let consumer_task = start_consumer(rabbit_sub_cloned, "hello");
-        join_all(vec![consumer_task]).await;
-    });
+    block_on(start_consumer(rabbit, "messages", http_client));
 }
 
-fn start_consumer(rabbit: RabbitMqManager, queue_name: &'static str) -> Task<()> {
-    return Task::spawn(async move {
-        loop {
-            let channel = rabbit.get_channel_pool().get().unwrap();
-            let consumer = channel
-                .basic_consume(
-                    queue_name,
-                    "message_service",
-                    BasicConsumeOptions::default(),
-                    FieldTable::default(),
-                )
-                .await
-                .unwrap();
-            for delivery in consumer {
-                println!("message received",);
-                if let Ok(delivery) = delivery {
-                    channel
-                        .basic_ack(delivery.delivery_tag, BasicAckOptions::default())
-                        .await
-                        .expect("error while acknowledging the message")
-                }
+async fn start_consumer(rabbit: RabbitMqManager, queue_name: &str, http_client: reqwest::Client) {
+    let mut channel: PooledConnection<ChannelManager>;
+    println!("will get");
+    loop {
+        match rabbit.get_channel_pool().get() {
+            Ok(ch) => {
+                channel = ch;
+            }
+            Err(reason) => {
+                println!("could not get channel, reason: {:?}", reason);
+                return;
             }
         }
-    });
+        println!("got channel");
+        let consumer: Consumer = channel
+            .basic_consume(
+                queue_name,
+                "message_service",
+                BasicConsumeOptions::default(),
+                FieldTable::default(),
+            )
+            .await
+            .unwrap();
+        // TODO: need to check if cloning of htt_client can be reduced. and what kind of
+        // performance impact does the cloning has here.
+        process_messages(consumer, channel, http_client.clone()).await;
+    }
 }
 
-// fn start_publisher(rabbit: RabbitMqManager) -> Task<()> {
-//     // let rabbit_pub_cloned = rabbit.clone();
-//     return Task::spawn(async move {
-//         // let publish_timeout = Duration::from_millis(2000);
-//         let mut counter = 0;
-//         loop {
-//             let result = rabbit
-//                 .publish_message_to_queue_async(
-//                     "hello",
-//                     &DummyPayload {
-//                         input: "kumarmo2".to_string(),
-//                     },
-//                 )
-//                 .await;
-//             match result {
-//                 Ok(is_published) => match is_published {
-//                     true => {
-//                         println!("message sent: {}", counter);
-//                         counter = counter + 1;
-//                     }
-//                     false => println!("error confirming message publish"),
-//                 },
-//                 Err(reason) => {
-//                     println!("error occured: {:?}", reason);
-//                 }
-//             }
-//             // Timer::after(publish_timeout).await;
-//         }
-//     });
-// }
+async fn process_messages(
+    consumer: Consumer,
+    channel: PooledConnection<ChannelManager>,
+    http_client: reqwest::Client,
+) {
+    println!("start of consumer processing");
+    let now = Instant::now();
+    for delivery in consumer {
+        println!(
+            "message received, thread_id: {:?}",
+            std::thread::current().id()
+        );
+        if let Ok(delivery) = delivery {
+            // TODO: Read more about rabbitmq's channel. check if there is scope for optimizations.
+            Task::spawn(handle_messasge_event(
+                delivery,
+                channel.clone(),
+                http_client.clone(),
+            ))
+            .detach()
+        }
+    }
+    println!(
+        "end of consumer processing, total time: {} mins",
+        (now.elapsed().as_secs_f64() / 60.0)
+    );
+}
 
-// #[derive(Serialize)]
-// struct DummyPayload {
-//     input: String,
-// }
+async fn handle_messasge_event(delivery: Delivery, channel: Channel, http_client: reqwest::Client) {
+    let string;
+    match String::from_utf8(delivery.data) {
+        Ok(result) => {
+            string = result;
+        }
+        Err(reason) => {
+            println!("could not deserialize message: {}", reason);
+            return;
+        }
+    }
+    let message_event =
+        from_str::<MessageEvent>(&string).expect("could not deserialize message event");
+    handle_message_event_bl(&message_event, &http_client).await;
+    println!("message event: {:?}", message_event);
+    channel
+        .basic_ack(delivery.delivery_tag, BasicAckOptions::default())
+        .await
+        .expect("error while acknowledging the message")
+}
