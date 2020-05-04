@@ -1,3 +1,7 @@
+mod business;
+mod dtos;
+mod utils;
+use crate::business::handle_message_event as handle_message_event_bl;
 use chat_common_types::events::MessageEvent;
 use lapin::{message::Delivery, options::*, types::FieldTable, Channel, Consumer};
 use manager::{ChannelManager, PooledConnection, RabbitMqManager};
@@ -5,6 +9,7 @@ use num_cpus;
 use serde_json::from_str;
 use smol::{self, block_on, Task};
 use std::time::Instant;
+use utils::create_client;
 
 fn main() {
     println!("hello world");
@@ -12,15 +17,16 @@ fn main() {
     let addr = "amqp://guest:guest@127.0.0.1:5672/%2f";
     // TODO: update the RabbitMqManager to accept the max number of connections and channels.
     let rabbit = RabbitMqManager::new(addr);
+    let http_client = create_client();
     let cpus = num_cpus::get().max(1);
     for _ in 0..cpus {
         std::thread::spawn(move || smol::run(futures::future::pending::<()>()));
     }
 
-    block_on(start_consumer(rabbit, "messages"));
+    block_on(start_consumer(rabbit, "messages", http_client));
 }
 
-async fn start_consumer(rabbit: RabbitMqManager, queue_name: &'static str) {
+async fn start_consumer(rabbit: RabbitMqManager, queue_name: &str, http_client: reqwest::Client) {
     let mut channel: PooledConnection<ChannelManager>;
     println!("will get");
     loop {
@@ -43,11 +49,17 @@ async fn start_consumer(rabbit: RabbitMqManager, queue_name: &'static str) {
             )
             .await
             .unwrap();
-        process_messages(consumer, channel).await;
+        // TODO: need to check if cloning of htt_client can be reduced. and what kind of
+        // performance impact does the cloning has here.
+        process_messages(consumer, channel, http_client.clone()).await;
     }
 }
 
-async fn process_messages(consumer: Consumer, channel: PooledConnection<ChannelManager>) {
+async fn process_messages(
+    consumer: Consumer,
+    channel: PooledConnection<ChannelManager>,
+    http_client: reqwest::Client,
+) {
     println!("start of consumer processing");
     let now = Instant::now();
     for delivery in consumer {
@@ -55,9 +67,14 @@ async fn process_messages(consumer: Consumer, channel: PooledConnection<ChannelM
             "message received, thread_id: {:?}",
             std::thread::current().id()
         );
-        let d: Delivery;
         if let Ok(delivery) = delivery {
-            Task::spawn(handle_messasge_event(delivery, channel.clone())).detach()
+            // TODO: Read more about rabbitmq's channel. check if there is scope for optimizations.
+            Task::spawn(handle_messasge_event(
+                delivery,
+                channel.clone(),
+                http_client.clone(),
+            ))
+            .detach()
         }
     }
     println!(
@@ -66,7 +83,7 @@ async fn process_messages(consumer: Consumer, channel: PooledConnection<ChannelM
     );
 }
 
-async fn handle_messasge_event(delivery: Delivery, channel: Channel) {
+async fn handle_messasge_event(delivery: Delivery, channel: Channel, http_client: reqwest::Client) {
     let string;
     match String::from_utf8(delivery.data) {
         Ok(result) => {
@@ -77,7 +94,9 @@ async fn handle_messasge_event(delivery: Delivery, channel: Channel) {
             return;
         }
     }
-    let message_event = from_str::<MessageEvent>(&string);
+    let message_event =
+        from_str::<MessageEvent>(&string).expect("could not deserialize message event");
+    handle_message_event_bl(&message_event, &http_client).await;
     println!("message event: {:?}", message_event);
     channel
         .basic_ack(delivery.delivery_tag, BasicAckOptions::default())
