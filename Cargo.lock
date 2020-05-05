@@ -152,8 +152,8 @@ checksum = "4785bdd1c96b2a846b2bd7cc02e86b6b3dbf14e7e53446c4f54c92a361040822"
 
 [[package]]
 name = "chat_common_types"
-version = "0.2.4"
-source = "git+https://github.com/kumarmo2/chat_common_types.git#05597cde75275286617d397a033d3230f0f39e65"
+version = "0.2.6"
+source = "git+https://github.com/kumarmo2/chat_common_types.git#7a2807a6928e7354e919b3a8f8863ca62da4e5e9"
 dependencies = [
  "serde",
 ]

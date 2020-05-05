@@ -40,6 +40,7 @@ async fn start_consumer(rabbit: RabbitMqManager, queue_name: &str, http_client: 
             }
         }
         println!("got channel");
+        let rabbit_cloned = rabbit.clone();
         let consumer: Consumer = channel
             .basic_consume(
                 queue_name,
@@ -51,7 +52,7 @@ async fn start_consumer(rabbit: RabbitMqManager, queue_name: &str, http_client: 
             .unwrap();
         // TODO: need to check if cloning of htt_client can be reduced. and what kind of
         // performance impact does the cloning has here.
-        process_messages(consumer, channel, http_client.clone()).await;
+        process_messages(consumer, channel, http_client.clone(), rabbit_cloned).await;
     }
 }
 
@@ -59,6 +60,7 @@ async fn process_messages(
     consumer: Consumer,
     channel: PooledConnection<ChannelManager>,
     http_client: reqwest::Client,
+    rabbit: RabbitMqManager,
 ) {
     println!("start of consumer processing");
     let now = Instant::now();
@@ -73,6 +75,7 @@ async fn process_messages(
                 delivery,
                 channel.clone(),
                 http_client.clone(),
+                rabbit.clone(),
             ))
             .detach()
         }
@@ -83,7 +86,12 @@ async fn process_messages(
     );
 }
 
-async fn handle_messasge_event(delivery: Delivery, channel: Channel, http_client: reqwest::Client) {
+async fn handle_messasge_event(
+    delivery: Delivery,
+    channel: Channel,
+    http_client: reqwest::Client,
+    rabbit: RabbitMqManager,
+) {
     let string;
     match String::from_utf8(delivery.data) {
         Ok(result) => {
@@ -96,8 +104,7 @@ async fn handle_messasge_event(delivery: Delivery, channel: Channel, http_client
     }
     let message_event =
         from_str::<MessageEvent>(&string).expect("could not deserialize message event");
-    handle_message_event_bl(&message_event, &http_client).await;
-    println!("message event: {:?}", message_event);
+    handle_message_event_bl(&message_event, &http_client, rabbit).await;
     channel
         .basic_ack(delivery.delivery_tag, BasicAckOptions::default())
         .await
